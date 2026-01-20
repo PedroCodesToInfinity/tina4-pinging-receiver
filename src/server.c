@@ -47,10 +47,11 @@ static void url_decode(char *dst, const char *src) {
 }
 
 void server_start(int port) {
-    int server_fd, client_fd;
+    int server_fd;
+    int client_fd;
     struct sockaddr_in addr;
+    int opt;
     char buffer[BUFFER_SIZE];
-    int opt = 1;
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
@@ -59,6 +60,7 @@ void server_start(int port) {
     }
 
     /* Allow immediate reuse of the port */
+    opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     memset(&addr, 0, sizeof(addr));
@@ -87,24 +89,26 @@ void server_start(int port) {
             continue;
         }
 
-        memset(buffer, 0, BUFFER_SIZE);
+        int bytes;
+        int content_length;
+        int body_len;
+        char *body;
+        char params[BUFFER_SIZE];
+        FILE *f;
 
-        /* Read request headers + possible partial body */
-        int bytes = read(client_fd, buffer, BUFFER_SIZE - 1);
+        memset(buffer, 0, BUFFER_SIZE);
+        bytes = read(client_fd, buffer, BUFFER_SIZE - 1);
         if (bytes <= 0) {
             close(client_fd);
             continue;
         }
-
         buffer[bytes] = '\0';
 
         printf("\n----- Incoming Request -----\n%s\n----------- End ------------\n", buffer);
 
         if (strncmp(buffer, "POST", 4) == 0) {
-            int content_length = get_content_length(buffer);
-            char *body = strstr(buffer, "\r\n\r\n");
-            int body_len = 0;
-
+            content_length = get_content_length(buffer);
+            body = strstr(buffer, "\r\n\r\n");
             if (body) {
                 body += 4;
                 body_len = bytes - (body - buffer);
@@ -121,10 +125,9 @@ void server_start(int port) {
                 if (body_len > content_length) body_len = content_length;
                 body[body_len] = '\0';
 
-                char params[BUFFER_SIZE];
                 url_decode(params, body);
 
-                FILE *f = fopen(DATA_FILE, "a");
+                f = fopen(DATA_FILE, "a");
                 if (f) {
                     fprintf(f, "%s\n", params);
                     fclose(f);
@@ -148,12 +151,4 @@ void server_start(int port) {
     }
 
     close(server_fd);
-}
-
-/* Simple main for testing */
-int main(int argc, char *argv[]) {
-    int port = 8080;
-    if (argc > 1) port = atoi(argv[1]);
-    server_start(port);
-    return 0;
 }
