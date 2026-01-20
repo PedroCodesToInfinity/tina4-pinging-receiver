@@ -5,25 +5,20 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 
-#include "server.h"
-
 #define BUFFER_SIZE 8192
 #define DATA_FILE "data/requests.txt"
 
+/* Extract Content-Length from POST headers */
 static int get_content_length(const char *req) {
-    const char *cl;
-    int len;
-
-    cl = strstr(req, "Content-Length:");
+    const char *cl = strstr(req, "Content-Length:");
     if (!cl) return 0;
 
     cl += 15;
     while (*cl == ' ') cl++;
-
-    len = atoi(cl);
-    return len;
+    return atoi(cl);
 }
 
+/* Minimal URL decode */
 static void url_decode(char *dst, const char *src) {
     char a, b;
     while (*src) {
@@ -51,13 +46,11 @@ static void url_decode(char *dst, const char *src) {
     *dst = '\0';
 }
 
-void server_start(int port)
-{
-    int server_fd;
-    int client_fd;
+void server_start(int port) {
+    int server_fd, client_fd;
     struct sockaddr_in addr;
     char buffer[BUFFER_SIZE];
-    int opt;
+    int opt = 1;
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
@@ -65,7 +58,7 @@ void server_start(int port)
         exit(1);
     }
 
-    opt = 1;
+    /* Allow immediate reuse of the port */
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     memset(&addr, 0, sizeof(addr));
@@ -96,60 +89,71 @@ void server_start(int port)
 
         memset(buffer, 0, BUFFER_SIZE);
 
-        /* Read request */
-        {
-            int bytes;
-            bytes = read(client_fd, buffer, BUFFER_SIZE - 1);
+        /* Read request headers + possible partial body */
+        int bytes = read(client_fd, buffer, BUFFER_SIZE - 1);
+        if (bytes <= 0) {
+            close(client_fd);
+            continue;
+        }
 
-            if (bytes > 0) {
-                printf("\n----- Incoming Request -----\n");
-                printf("%s", buffer);
-                printf("\n----------- End ------------\n");
+        buffer[bytes] = '\0';
 
-                if (strncmp(buffer, "POST", 4) == 0) {
-                    int content_length;
-                    char *body;
-                    int body_len;
-                    char params[BUFFER_SIZE];
-                    FILE *f;
+        printf("\n----- Incoming Request -----\n%s\n----------- End ------------\n", buffer);
 
-                    content_length = get_content_length(buffer);
+        if (strncmp(buffer, "POST", 4) == 0) {
+            int content_length = get_content_length(buffer);
+            char *body = strstr(buffer, "\r\n\r\n");
+            int body_len = 0;
 
-                    body = strstr(buffer, "\r\n\r\n");
-                    if (body) {
-                        body += 4;
-                        body_len = bytes - (body - buffer);
+            if (body) {
+                body += 4;
+                body_len = bytes - (body - buffer);
 
-                        while (body_len < content_length) {
-                            int more;
-                            more = read(client_fd, buffer + bytes, BUFFER_SIZE - bytes - 1);
-                            if (more <= 0) break;
-                            bytes += more;
-                            body_len += more;
-                        }
+                /* Read remaining POST body if needed */
+                while (body_len < content_length && bytes < BUFFER_SIZE - 1) {
+                    int more = read(client_fd, buffer + bytes, BUFFER_SIZE - bytes - 1);
+                    if (more <= 0) break;
+                    bytes += more;
+                    body_len += more;
+                }
 
-                        url_decode(params, body);
+                /* Null-terminate exactly at body length */
+                if (body_len > content_length) body_len = content_length;
+                body[body_len] = '\0';
 
-                        f = fopen(DATA_FILE, "a");
-                        if (f) {
-                            fprintf(f, "%s\n", params);
-                            fclose(f);
-                        } else {
-                            perror("fopen");
-                        }
-                    }
+                char params[BUFFER_SIZE];
+                url_decode(params, body);
+
+                FILE *f = fopen(DATA_FILE, "a");
+                if (f) {
+                    fprintf(f, "%s\n", params);
+                    fclose(f);
+                } else {
+                    perror("fopen");
                 }
             }
         }
 
         /* Minimal HTTP response */
-        write(client_fd,
-              "HTTP/1.1 200 OK\r\n"
-              "Content-Length: 0\r\n"
-              "\r\n",
-              38);
+        const char *resp =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/plain\r\n"
+            "Content-Length: 2\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "OK";
+        write(client_fd, resp, strlen(resp));
 
         close(client_fd);
     }
+
+    close(server_fd);
 }
 
+/* Simple main for testing */
+int main(int argc, char *argv[]) {
+    int port = 8080;
+    if (argc > 1) port = atoi(argv[1]);
+    server_start(port);
+    return 0;
+}
